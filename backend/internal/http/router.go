@@ -71,6 +71,9 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 	protectedVideoGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	{
 		protectedVideoGroup.POST("/uploadVideo", videoHandler.UploadVideo)
+		protectedVideoGroup.POST("/uploadVideo/init", videoHandler.InitVideoUpload)
+		protectedVideoGroup.POST("/uploadVideo/chunk", videoHandler.UploadVideoChunk)
+		protectedVideoGroup.POST("/uploadVideo/complete", videoHandler.CompleteVideoUpload)
 		protectedVideoGroup.POST("/uploadCover", videoHandler.UploadCover)
 		protectedVideoGroup.POST("/publish", videoHandler.PublishVideo)
 	}

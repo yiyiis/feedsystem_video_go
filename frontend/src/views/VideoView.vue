@@ -16,6 +16,7 @@ const toast = useToastStore()
 const busy = ref(false)
 const stage = ref('')
 const published = ref<Video | null>(null)
+const uploadProgress = ref(0)
 
 const videoInput = ref<HTMLInputElement | null>(null)
 const coverInput = ref<HTMLInputElement | null>(null)
@@ -115,8 +116,12 @@ async function onPublish() {
     stage.value = '上传封面'
     const coverRes = await videoApi.uploadCover(publishForm.cover!)
 
-    stage.value = '上传视频'
-    const videoRes = await videoApi.uploadVideo(publishForm.video!)
+    uploadProgress.value = 0
+    stage.value = '上传视频分片 0%'
+    const videoRes = await videoApi.uploadVideoInChunks(publishForm.video!, (progress) => {
+      uploadProgress.value = progress.percent
+      stage.value = `上传视频分片 ${progress.uploadedChunks}/${progress.totalChunks}（${progress.percent}%）`
+    })
 
     const coverUrl = coverRes.url || coverRes.cover_url || ''
     const playUrl = videoRes.url || videoRes.play_url || ''
@@ -141,6 +146,7 @@ async function onPublish() {
   } finally {
     busy.value = false
     stage.value = ''
+    uploadProgress.value = 0
   }
 }
 </script>
@@ -153,7 +159,7 @@ async function onPublish() {
           <p class="title" style="margin: 0">发布视频</p>
           <div v-if="busy" class="pill">进行中：{{ stage || '…' }}</div>
         </div>
-        <p class="subtle" style="margin-top: 10px">选择视频文件与封面图片，上传到本机后自动生成 URL，再写入 `/video/publish`。</p>
+        <p class="subtle" style="margin-top: 10px">选择视频文件与封面图片；视频会按分片上传、服务端合并后生成 URL，再写入 `/video/publish`。</p>
 
         <div class="grid form-grid" style="margin-top: 16px">
           <div>
@@ -208,6 +214,16 @@ async function onPublish() {
             <div v-if="preview.videoUrl" class="preview-card">
               <div class="subtle">视频预览</div>
               <video class="video" :src="preview.videoUrl" controls playsinline preload="metadata" />
+            </div>
+          </div>
+
+          <div v-if="busy && uploadProgress > 0" class="upload-progress" aria-live="polite">
+            <div class="row" style="justify-content: space-between">
+              <span class="subtle">视频分片上传进度</span>
+              <span class="mono">{{ uploadProgress }}%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-bar" :style="{ width: `${uploadProgress}%` }" />
             </div>
           </div>
 
@@ -342,5 +358,24 @@ async function onPublish() {
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(0, 0, 0, 0.35);
+}
+
+.upload-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.progress-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  transition: width 0.2s ease;
 }
 </style>
