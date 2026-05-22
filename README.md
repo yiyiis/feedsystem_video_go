@@ -1,6 +1,6 @@
 # feedsystem_video_go
 
-基于 Go + Vue 3 的短视频 Feed 系统，含账号、视频、点赞、评论、关注、Feed 流，支持 Redis 缓存与 RabbitMQ 异步 Worker（API 与 Worker 可拆分部署）。
+基于 Go + Vue 3 的短视频 Feed 系统，含账号、视频、点赞、评论、关注、Feed 流、私信、通知，支持 Redis 缓存、RabbitMQ 异步 Worker、分片上传、SSE 实时推送、Docker Compose 部署。
 
 ## 更完整的视频 Feed 流系统项目
 
@@ -10,14 +10,15 @@
 
 | 模块 | 功能 |
 |------|------|
-| 账号 | 注册/登录/改名/改密/登出，头像上传，个人简介，Refresh Token 双 Token 鉴权 |
-| 视频 | 上传/发布/删除，按作者查看，详情（三级缓存），#话题标签 |
-| 点赞 | 点赞/取消/是否已赞/已赞列表，SSE 实时通知 |
-| 评论 | 发布/删除/列表，@提及 通知 |
-| 关注 | 关注/取关/粉丝列表/关注列表/粉丝计数，SSE 实时通知 |
-| Feed | 最新/点赞榜/热度榜/关注流/话题标签流，冷热分离+游标分页，虚拟滚动 |
-| 私信 | 发送/对话列表 |
-| 通知 | SSE 实时推送，未读计数，已读标记 |
+| 账号 | 注册、登录、Refresh Token、改名、改密、登出、头像上传、个人简介、主页统计 |
+| 视频 | 普通上传、5MB 分片上传、断点续传、封面上传、发布、作者作品、详情缓存、#话题标签 |
+| 点赞 | 点赞、取消点赞、是否已赞、已赞列表、RabbitMQ 异步落库、热度更新、SSE 通知 |
+| 评论 | 发布、删除、列表、@username 提及通知、RabbitMQ 异步落库、热度更新 |
+| 关注 | 关注、取关、粉丝列表、关注列表、粉丝/关注计数、SSE 通知 |
+| Feed | 推荐流、关注流、点赞榜、热榜、话题流、冷热分离、游标分页、短视频沉浸播放 |
+| 私信 | 发送私信、按对端用户查看最近 50 条会话 |
+| 通知 | 点赞/评论/关注事件通知、提及通知、SSE 实时推送、通知列表、未读计数、已读标记 |
+| 工程 | Docker Compose、`start.sh`、API/Worker 拆分运行、限流、pprof、健康检查 |
 
 ## Docker Compose 一键启动
 
@@ -30,11 +31,22 @@ docker compose up -d --build
 - 后端 API：`http://localhost:8080`
 - RabbitMQ 管理台：`http://localhost:15672`（`admin` / `password123`）
 
-默认 `.env` 自动生成 JWT 密钥。生产环境请修改 `JWT_SECRET`。
+Docker Compose 会读取 `.env`，缺省使用 `feedsystem-dev-secret-key`。生产环境请修改 `JWT_SECRET`。
 
-## 测试数据
+## 脚本启动
 
-启动后内置 100 个测试用户（`user001` ~ `user100`，密码均为 `123456`），`user001` 已发布视频并拥有粉丝/点赞数据。
+```bash
+./start.sh
+```
+
+`start.sh` 默认启动 RabbitMQ、Redis、后端 API、Worker 与前端。常用开关：
+
+```bash
+START_FRONTEND=0 ./start.sh       # API + Worker
+START_WORKER=0 ./start.sh         # API + 前端
+STOP_DOCKER=1 ./start.sh          # 退出时停止脚本拉起的 compose 服务
+CONFIG_PATH=configs/config.yaml ./start.sh
+```
 
 ## 本地开发
 
@@ -77,8 +89,12 @@ npm install && npm run dev
 | POST | `/publish` | JWT | 发布视频（自动提取 #话题） |
 | POST | `/uploadVideo` | JWT | 上传视频文件（mp4，≤200MB） |
 | POST | `/uploadCover` | JWT | 上传封面（jpg/png/webp，≤10MB） |
+| POST | `/chunk/init` | JWT | 初始化分片上传（文件 MD5、大小、分片数） |
+| POST | `/chunk/upload` | JWT | 上传单个分片（multipart，含分片 MD5 校验） |
+| POST | `/chunk/status` | JWT | 查询已上传分片 |
+| POST | `/chunk/complete` | JWT | 合并分片并返回 play_url |
 | POST | `/listByAuthorID` | 否 | 按作者查视频 |
-| POST | `/getDetail` | 否 | 视频详情（三级缓存） |
+| POST | `/getDetail` | 否 | 视频详情缓存 |
 
 ### 点赞 `/like`
 | 方法 | 路径 | 鉴权 | 说明 |
@@ -116,9 +132,9 @@ npm install && npm run dev
 ### 通知 `/notification`
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| GET | `/stream?token=` | 是 | SSE 实时推送 |
-| POST | `/list` | 是 | 通知列表 |
-| POST | `/markRead` | 是 | 标记已读（传 id 单条，不传全标） |
+| GET | `/stream?token=<access_token>` | 是 | SSE 实时推送，也支持 `Authorization: Bearer <token>` |
+| POST | `/list` | 是 | 最近 50 条通知 |
+| POST | `/markRead` | 是 | 标记已读；传 `id` 标记单条，省略 `id` 标记全部 |
 | POST | `/unreadCount` | 是 | 未读计数 |
 
 ### 私信 `/message`
@@ -132,8 +148,23 @@ npm install && npm run dev
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `JWT_SECRET` | `feedsystem-dev-secret-key` | JWT 签名密钥，生产须改 |
+| `SERVER_PORT` | `8080` | 后端监听端口 |
+| `MYSQL_HOST` / `MYSQL_PORT` | 配置文件值 | MySQL 地址 |
+| `MYSQL_USER` / `MYSQL_PASSWORD` | 配置文件值 | MySQL 账号密码 |
 | `MYSQL_ROOT_PASSWORD` | `123456` | MySQL root 密码 |
+| `MYSQL_DATABASE` | `feedsystem` | MySQL 数据库名 |
+| `REDIS_HOST` / `REDIS_PORT` | 配置文件值 | Redis 地址 |
 | `REDIS_PASSWORD` | `123456` | Redis 密码 |
+| `REDIS_DB` | `0` | Redis DB |
+| `RABBITMQ_HOST` / `RABBITMQ_PORT` | 配置文件值 | RabbitMQ 地址 |
 | `RABBITMQ_USER` / `RABBITMQ_PASS` | `admin` / `password123` | RabbitMQ 账号 |
 
 详见 `.env.example`。
+
+## 运维与可观测性
+
+- `GET /healthz` 返回后端健康状态。
+- 本地配置默认开启 pprof：API `localhost:6060`，Worker `localhost:6061`。
+- 上传文件写入 `backend/.run/uploads`；Docker 环境挂载到 `backend_uploads` volume。
+- Redis 用于 Token 缓存、视频实体缓存、Feed 时间线、热榜窗口、分片上传会话。
+- RabbitMQ Topic Exchange 覆盖点赞、评论、关注、热度、视频时间线事件，并配置 DLX。
