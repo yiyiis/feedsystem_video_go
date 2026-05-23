@@ -127,7 +127,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 		socialMQ = nil
 	}
 	socialRepository := social.NewSocialRepository(db)
-	socialService := social.NewSocialService(socialRepository, accountRepository, socialMQ)
+	socialService := social.NewSocialService(socialRepository, accountRepository, socialMQ, cache)
 	socialHandler := social.NewSocialHandler(socialService)
 	socialGroup := r.Group("/social")
 	protectedSocialGroup := socialGroup.Group("")
@@ -227,43 +227,25 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *rabbitmq.RabbitMQ) *g
 		if rmq != nil {
 			hub := sseHub
 			ctx := context.Background()
-			// consume from like queue
-			go func() {
-				ch, err := rmq.NewChannel()
-				if err != nil {
-					log.Printf("notification-like channel: %v", err)
-					return
-				}
-				defer ch.Close()
-				w := worker.NewNotificationWorker(ch, db, "notification.like", hub)
-				if err := w.Run(ctx); err != nil {
-					log.Printf("notification-like worker: %v", err)
-				}
-			}()
-			go func() {
-				ch, err := rmq.NewChannel()
-				if err != nil {
-					log.Printf("notification-comment channel: %v", err)
-					return
-				}
-				defer ch.Close()
-				w := worker.NewNotificationWorker(ch, db, "notification.comment", hub)
-				if err := w.Run(ctx); err != nil {
-					log.Printf("notification-comment worker: %v", err)
-				}
-			}()
-			go func() {
-				ch, err := rmq.NewChannel()
-				if err != nil {
-					log.Printf("notification-social channel: %v", err)
-					return
-				}
-				defer ch.Close()
-				w := worker.NewNotificationWorker(ch, db, "notification.social", hub)
-				if err := w.Run(ctx); err != nil {
-					log.Printf("notification-social worker: %v", err)
-				}
-			}()
+			// 每个 notification worker 独立 Channel + 自动重连
+			for _, q := range []string{"notification.like", "notification.comment", "notification.social"} {
+				go func(queue string) {
+					for {
+						ch, err := rmq.NewChannel()
+						if err != nil {
+							log.Printf("notification-%s: 创建 Channel 失败: %v, 5秒后重试", queue, err)
+							time.Sleep(5 * time.Second)
+							continue
+						}
+						w := worker.NewNotificationWorker(ch, db, queue, hub)
+						if err := w.Run(ctx); err != nil {
+							log.Printf("notification-%s: %v, 5秒后重连...", queue, err)
+						}
+						ch.Close()
+						time.Sleep(5 * time.Second)
+					}
+				}(q)
+			}
 		} else {
 			log.Printf("Notification SSE disabled (MQ not available)")
 		}
